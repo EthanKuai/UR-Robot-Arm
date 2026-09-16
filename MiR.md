@@ -1,5 +1,7 @@
 # MiR
 
+**Model: MiR 200**
+
 ## Power on
 
 - Power button on front right (bottom)
@@ -21,11 +23,15 @@
 - Wait.
 - Verify power percentage going up.
 
-## UR Arm
+---
+
+# UR Arm
+
+**Model: UR 10**
 
 - Turn on everything within.
-- Turn on tablet.
-- Setup > Network > Static IP > Set
+- Turn on teach pendant.
+- On teach pendant: Setup > Network > Static IP > Set
 ```
 IP: 192.168.1.20
 Subnet: 255.255.255.0
@@ -33,4 +39,7 @@ Gateway: 0.0.0.0
 DNS1: 192.168.1.1
 DNS2: 192.168.0.1
 ```
-- Ethernet cable (or, via router)
+- Connect via ethernet cable (or, via router)
+
+## Robotiq Camera
+> https://robotiq.com/support

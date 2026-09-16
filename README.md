@@ -5,16 +5,13 @@
 Since the UR arm is mounted on a [MiR](MiR.md), need to know how to control that first.
 
 ## Protocols
+> https://www.universal-robots.com/developer/
 
-| Protocol | Language |
-|:--:|:--:|
-| [Modbus](ModbusTCP.md) | Python |
-| [UR Official ROS](UR-ROS.md) | C++ |
-| [RTDE](RTDE.md) | Python, C++ |
-
-- [Modbus](ModbusTCP.md) - Python
-- [UR Official ROS](UR-ROS.md) - C++
-- [RTDE](RTDE.md) - Python, C++
+|           Protocol           |  Language   |
+| :--------------------------: | :---------: |
+|    [Modbus](ModbusTCP.md)    |   Python    |
+| [UR Official ROS](UR-ROS.md) |     C++     |
+|       [RTDE](RTDE.md)        | Python, C++ |
 
 ### General TCP
 

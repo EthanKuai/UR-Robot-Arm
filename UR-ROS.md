@@ -1,7 +1,12 @@
 # ROS Drivers
-> https://docs.universal-robots.com/Universal_Robots_ROS_Documentation/rolling/doc/ur_client_library/doc/installation.html
 
 **`ur_client_library`** & **`ur_robot_driver`**
+
+- https://docs.universal-robots.com/Universal_Robots_ROS_Documentation/rolling/doc/ur_client_library/doc/index.html
+- https://docs.universal-robots.com/Universal_Robots_ROS2_Documentation/doc/ur_robot_driver/ur_robot_driver/doc/index.html
+
+> [!info]
+> In the backend it comms via URScripts.
 
 ## Installation
 > Assumes within ROS workspace (easiest)
@@ -42,3 +47,9 @@ cmake --build .
 
 # `ur_robot_driver`
 
+## Setup
+> https://docs.universal-robots.com/Universal_Robots_ROS2_Documentation/doc/ur_robot_driver/ur_robot_driver/doc/installation/robot_setup.html
+
+```shell
+
+```
