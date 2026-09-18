@@ -2,15 +2,18 @@
 # Camera feed comes from the wrist camera URCap's HTTP endpoint on the robot's own IP (port 4242),
 # not a local /dev/video device.
 #
-# DETECTOR selects the targeting strategy (env var, default "aruco"):
-#   aruco        - continuous closed-loop servo (speedL) on an ArUco marker (DICT_4X4_50).
+# DETECTOR selects the targeting strategy (env var, default "template"):
+#   template     - continuous closed-loop servo (speedL) on the tool, found by multi-scale template
+#                  matching against a cropped image of it (TEMPLATE_PATH, see capture_template.py).
 #   vlm-only     - discrete jut moves: stop, ask ChatGPT vision to locate TARGET_DESC, moveL, repeat.
-#   vlm-assisted - same VLM jut phase, then hands off to the aruco continuous corrector to finish.
+#   vlm-assisted - same VLM jut phase, then hands off to the template continuous corrector to finish.
 #
 # Camera->robot mapping is probe-calibrated at startup: the TCP jogs PROBE_STEP along tool X and Y,
 # and the resulting image shifts form a 2x2 image Jacobian J (error per meter, tool frame). Moves
 # are then d = -J^-1 * error in the tool frame, so sign, axis swap and scale (at the calibrated
-# depth) come from measurement. Assumes the target stays still and depth stays roughly constant.
+# depth) come from measurement. Assumes the target stays still. J scales with 1/depth, as does the
+# tool's matched template scale, so the template servo rescales J by it when depth changes; the
+# VLM jut phase has no scale signal and assumes depth stays at the calibrated value.
 import base64
 import json
 import os
@@ -23,8 +26,9 @@ import requests
 import rtde_control
 import rtde_receive
 
-DETECTOR = os.environ.get("DETECTOR", "aruco")  # aruco | vlm-only | vlm-assisted
-TARGET_DESC = os.environ.get("TARGET_DESC", "the ArUco marker")
+DETECTOR = os.environ.get("DETECTOR", "template")  # template | vlm-only | vlm-assisted
+TARGET_DESC = os.environ.get("TARGET_DESC", "the flat metal disc tool with 9 drill holes")
+TEMPLATE_PATH = os.environ.get("TEMPLATE_PATH", "tool.png")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-terra")  # verify against current OpenAI vision models
 
 MAX_SPEED = 0.05       # m/s cap for continuous servo
@@ -36,6 +40,10 @@ MAX_JUT_ITERS = 20
 PROBE_STEP = 0.02       # meters jogged along each tool axis during calibration
 MIN_PROBE_SHIFT = 0.01  # normalized error; weaker/degenerate probe response rejects calibration
 SETTLE_S = 0.5          # wait after a probe move so the camera serves a fresh frame
+# Template scales searched, relative to the capture height; ~10% steps. >1 = tool looks bigger
+# (camera lower). Untuned — widen the range if the arm descends further than ~3x closer.
+TEMPLATE_SCALES = np.geomspace(0.5, 3.0, 20)
+MATCH_THRESH = 0.6      # TM_CCOEFF_NORMED score below which the tool counts as not found; untuned
 
 
 def clip_norm(v, max_norm):
@@ -43,13 +51,25 @@ def clip_norm(v, max_norm):
     return v * (max_norm / n) if n > max_norm else v
 
 
-def detect_aruco(frame, detector):
-    corners, ids, _ = detector.detectMarkers(frame)
-    if ids is None:
+def detect_tool(frame, template):
+    # Multi-scale normalized cross-correlation: the grayscale template is resized over TEMPLATE_SCALES
+    # and the best-scoring position/scale wins. Handles the tool growing as the camera descends;
+    # not rotation invariant, and can't locate the tool while it's partly outside the frame.
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    best_score, best = -1.0, None
+    for s in TEMPLATE_SCALES:
+        t = cv2.resize(template, None, fx=s, fy=s, interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR)
+        th, tw = t.shape
+        if th > h or tw > w:
+            break
+        _, score, _, (x, y) = cv2.minMaxLoc(cv2.matchTemplate(gray, t, cv2.TM_CCOEFF_NORMED))
+        if score > best_score:
+            best_score, best = score, (x + tw / 2, y + th / 2, s)
+    if best_score < MATCH_THRESH:
         return None
-    cx, cy = corners[0][0].mean(axis=0)
-    h, w = frame.shape[:2]
-    return (w / 2 - cx) / (w / 2), (h / 2 - cy) / (h / 2)
+    cx, cy, s = best
+    return (w / 2 - cx) / (w / 2), (h / 2 - cy) / (h / 2), s
 
 
 def detect_vlm(frame, client, target_desc):
@@ -95,16 +115,15 @@ def draw_direction_hud(frame, dx, dy, max_val):
 def main():
     print("=== Visual servo ===")
     print(f"DETECTOR={DETECTOR}")
-    if DETECTOR == "aruco":
-        print("Target: an ArUco marker (DICT_4X4_50) — a generated black/white bit-grid square, not a plain cross.")
-        print("  Generate one to print, e.g.:")
-        print("    python3 -c \"import cv2; cv2.imwrite('marker.png', "
-              "cv2.aruco.generateImageMarker(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), 0, 400))\"")
+    if DETECTOR == "template":
+        print(f"Target: the tool image in {TEMPLATE_PATH} (crop one with capture_template.py), "
+              f"matched at {TEMPLATE_SCALES[0]:.1f}-{TEMPLATE_SCALES[-1]:.1f}x its captured size.")
     else:
         print(f"Target description sent to {OPENAI_MODEL}: \"{TARGET_DESC}\" (set via TARGET_DESC env var).")
         print("Requires OPENAI_API_KEY in the environment.")
         if DETECTOR == "vlm-assisted":
-            print("After the VLM roughly centers the target, an ArUco corrector takes over — target must be a marker.")
+            print(f"After the VLM roughly centers the target, the template corrector takes over — "
+                  f"{TEMPLATE_PATH} must show the same tool.")
     print(f"Calibration first: TCP jogs {PROBE_STEP * 100:.0f} cm along tool X and Y — keep the target visible and still.")
     print("Top-right circle/arrow = direction & magnitude of the current correction.")
     print("Press 'q' in the video window to stop.")
@@ -112,10 +131,9 @@ def main():
     UR_IP = os.environ.get("UR_IP", "192.168.1.20")
     CAM_URL = f"http://{UR_IP}:4242/current.jpg?type=color"
 
-    detector = cv2.aruco.ArucoDetector(
-        cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50),
-        cv2.aruco.DetectorParameters(),
-    )
+    template = cv2.imread(TEMPLATE_PATH, cv2.IMREAD_GRAYSCALE)
+    if DETECTOR != "vlm-only" and template is None:
+        raise SystemExit(f"Can't read template {TEMPLATE_PATH}; crop one with capture_template.py first.")
 
     rtde_c = rtde_control.RTDEControlInterface(UR_IP)
     rtde_r = rtde_receive.RTDEReceiveInterface(UR_IP)
@@ -167,13 +185,19 @@ def main():
             raise RuntimeError("Calibration: probe barely/degenerately moved the target; raise PROBE_STEP or move closer")
         return np.linalg.inv(J)
 
-    def run_continuous_aruco_servo(J_inv):
+    def run_continuous_template_servo(J_inv):
+        # First detection happens at the calibrated depth, so its scale is the reference for J.
+        ref_scale = None
         while True:
             frame = get_frame()
-            error = detect_aruco(frame, detector)
+            error = detect_tool(frame, template)
 
             if error is not None:
-                v_tool = clip_norm(-SERVO_GAIN * J_inv @ np.array(error), MAX_SPEED)
+                ex, ey, scale = error
+                ref_scale = ref_scale or scale
+                # J grows with scale (both ~1/depth), so J^-1 shrinks by ref_scale / scale.
+                J_inv_now = J_inv * (ref_scale / scale)
+                v_tool = clip_norm(-SERVO_GAIN * J_inv_now @ np.array([ex, ey]), MAX_SPEED)
                 rtde_c.speedL([*tool_to_base(v_tool).tolist(), 0, 0, 0], ACCEL)
             else:
                 v_tool = np.zeros(2)
@@ -218,17 +242,17 @@ def main():
         return True
 
     try:
-        if DETECTOR == "aruco":
-            J_inv = calibrate(lambda f: detect_aruco(f, detector))
-            run_continuous_aruco_servo(J_inv)
+        if DETECTOR == "template":
+            J_inv = calibrate(lambda f: detect_tool(f, template))
+            run_continuous_template_servo(J_inv)
         elif DETECTOR in ("vlm-only", "vlm-assisted"):
             from openai import OpenAI
 
             client = OpenAI()
-            # Jut moves stay in the tool XY plane, so depth (and J) still holds for the aruco phase.
+            # Jut moves stay in the tool XY plane, so depth (and J) still holds for the template phase.
             J_inv = calibrate(lambda f: detect_vlm(f, client, TARGET_DESC))
             if run_vlm_jut_phase(client, J_inv) and DETECTOR == "vlm-assisted":
-                run_continuous_aruco_servo(J_inv)
+                run_continuous_template_servo(J_inv)
         else:
             raise ValueError(f"Unknown DETECTOR: {DETECTOR}")
     finally:
