@@ -7,11 +7,14 @@
 #   vlm-only     - discrete jut moves: stop, ask ChatGPT vision to locate TARGET_DESC, moveL, repeat.
 #   vlm-assisted - same VLM jut phase, then hands off to the aruco continuous corrector to finish.
 #
-# Camera->base axis mapping (which error axis drives which robot axis) is a placeholder, NOT
-# hand-eye calibrated — tune sign/scale once tested against the real wrist camera mount.
+# Camera->robot mapping is probe-calibrated at startup: the TCP jogs PROBE_STEP along tool X and Y,
+# and the resulting image shifts form a 2x2 image Jacobian J (error per meter, tool frame). Moves
+# are then d = -J^-1 * error in the tool frame, so sign, axis swap and scale (at the calibrated
+# depth) come from measurement. Assumes the target stays still and depth stays roughly constant.
 import base64
 import json
 import os
+import time
 from datetime import datetime
 
 import cv2
@@ -24,11 +27,20 @@ DETECTOR = os.environ.get("DETECTOR", "aruco")  # aruco | vlm-only | vlm-assiste
 TARGET_DESC = os.environ.get("TARGET_DESC", "the ArUco marker")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-terra")  # verify against current OpenAI vision models
 
-MAX_SPEED = 0.05       # m/s cap, also the proportional gain for continuous servo
+MAX_SPEED = 0.05       # m/s cap for continuous servo
+SERVO_GAIN = 1.0        # 1/s, proportional gain on the estimated tool-frame offset
 ACCEL = 0.3
-JUT_STEP = 0.02         # meters per discrete VLM jut
+JUT_STEP = 0.02         # max meters per discrete VLM jut
 CENTER_THRESH = 0.05    # normalized error below which a jut phase is considered centered
 MAX_JUT_ITERS = 20
+PROBE_STEP = 0.02       # meters jogged along each tool axis during calibration
+MIN_PROBE_SHIFT = 0.01  # normalized error; weaker/degenerate probe response rejects calibration
+SETTLE_S = 0.5          # wait after a probe move so the camera serves a fresh frame
+
+
+def clip_norm(v, max_norm):
+    n = np.linalg.norm(v)
+    return v * (max_norm / n) if n > max_norm else v
 
 
 def detect_aruco(frame, detector):
@@ -93,6 +105,7 @@ def main():
         print("Requires OPENAI_API_KEY in the environment.")
         if DETECTOR == "vlm-assisted":
             print("After the VLM roughly centers the target, an ArUco corrector takes over — target must be a marker.")
+    print(f"Calibration first: TCP jogs {PROBE_STEP * 100:.0f} cm along tool X and Y — keep the target visible and still.")
     print("Top-right circle/arrow = direction & magnitude of the current correction.")
     print("Press 'q' in the video window to stop.")
 
@@ -124,27 +137,55 @@ def main():
         cv2.imshow("wrist camera", frame)
         return cv2.waitKey(1) & 0xFF == ord(quit_key)
 
-    def run_continuous_aruco_servo():
+    def tool_to_base(d_tool_xy):
+        R = cv2.Rodrigues(np.array(rtde_r.getActualTCPPose()[3:]))[0]
+        return R[:, :2] @ d_tool_xy
+
+    def calibrate(detect):
+        # Returns J^-1, mapping normalized image error to the tool-frame XY offset (m) that produced it.
+        start = rtde_r.getActualTCPPose()
+
+        def error_at(pose):
+            rtde_c.moveL(pose, speed=0.1, acceleration=ACCEL)
+            time.sleep(SETTLE_S)
+            error = detect(get_frame())
+            if error is None:
+                raise RuntimeError("Calibration: target not visible")
+            return np.array(error[:2])
+
+        e0 = error_at(start)
+        cols = []
+        for axis in range(2):
+            probe = list(start)
+            probe[:3] = (np.array(start[:3]) + tool_to_base(np.eye(2)[axis] * PROBE_STEP)).tolist()
+            cols.append((error_at(probe) - e0) / PROBE_STEP)
+        rtde_c.moveL(start, speed=0.1, acceleration=ACCEL)
+
+        J = np.column_stack(cols)
+        print(f"Calibration: J (normalized error per m, cols = tool X, tool Y) =\n{J}")
+        if np.linalg.svd(J * PROBE_STEP, compute_uv=False)[-1] < MIN_PROBE_SHIFT:
+            raise RuntimeError("Calibration: probe barely/degenerately moved the target; raise PROBE_STEP or move closer")
+        return np.linalg.inv(J)
+
+    def run_continuous_aruco_servo(J_inv):
         while True:
             frame = get_frame()
             error = detect_aruco(frame, detector)
 
             if error is not None:
-                ex, ey = error
-                vx = float(np.clip(ey * MAX_SPEED, -MAX_SPEED, MAX_SPEED))
-                vy = float(np.clip(ex * MAX_SPEED, -MAX_SPEED, MAX_SPEED))
-                rtde_c.speedL([vx, vy, 0, 0, 0, 0], ACCEL)
+                v_tool = clip_norm(-SERVO_GAIN * J_inv @ np.array(error), MAX_SPEED)
+                rtde_c.speedL([*tool_to_base(v_tool).tolist(), 0, 0, 0], ACCEL)
             else:
-                vx = vy = 0.0
+                v_tool = np.zeros(2)
                 rtde_c.speedStop()
 
-            log(vx, vy)
-            draw_direction_hud(frame, vx, vy, MAX_SPEED)
+            log(*v_tool)
+            draw_direction_hud(frame, *v_tool, MAX_SPEED)
             if show(frame):
                 return False
         return True
 
-    def run_vlm_jut_phase(client):
+    def run_vlm_jut_phase(client, J_inv):
         for _ in range(MAX_JUT_ITERS):
             frame = get_frame()
             result = detect_vlm(frame, client, TARGET_DESC)
@@ -168,9 +209,9 @@ def main():
                 print("VLM: target centered")
                 return True
 
+            d_tool = clip_norm(-J_inv @ np.array([ex, ey]), JUT_STEP)
             pose = rtde_r.getActualTCPPose()
-            pose[0] += ey * JUT_STEP
-            pose[1] += ex * JUT_STEP
+            pose[:3] = (np.array(pose[:3]) + tool_to_base(d_tool)).tolist()
             rtde_c.moveL(pose, speed=0.1, acceleration=0.3)
 
         print("VLM: max jut iterations reached without centering")
@@ -178,13 +219,16 @@ def main():
 
     try:
         if DETECTOR == "aruco":
-            run_continuous_aruco_servo()
+            J_inv = calibrate(lambda f: detect_aruco(f, detector))
+            run_continuous_aruco_servo(J_inv)
         elif DETECTOR in ("vlm-only", "vlm-assisted"):
             from openai import OpenAI
 
             client = OpenAI()
-            if run_vlm_jut_phase(client) and DETECTOR == "vlm-assisted":
-                run_continuous_aruco_servo()
+            # Jut moves stay in the tool XY plane, so depth (and J) still holds for the aruco phase.
+            J_inv = calibrate(lambda f: detect_vlm(f, client, TARGET_DESC))
+            if run_vlm_jut_phase(client, J_inv) and DETECTOR == "vlm-assisted":
+                run_continuous_aruco_servo(J_inv)
         else:
             raise ValueError(f"Unknown DETECTOR: {DETECTOR}")
     finally:
