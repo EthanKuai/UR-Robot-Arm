@@ -22,9 +22,10 @@ from datetime import datetime
 
 import cv2
 import numpy as np
-import requests
 import rtde_control
 import rtde_receive
+
+from capture import Camera
 
 DETECTOR = os.environ.get("DETECTOR", "template")  # template | vlm-only | vlm-assisted
 TARGET_DESC = os.environ.get("TARGET_DESC", "the flat metal disc tool with 9 drill holes")
@@ -129,7 +130,7 @@ def main():
     print("Press 'q' in the video window to stop.")
 
     UR_IP = os.environ.get("UR_IP", "192.168.1.20")
-    CAM_URL = f"http://{UR_IP}:4242/current.jpg?type=color"
+    camera = Camera(UR_IP)
 
     template = cv2.imread(TEMPLATE_PATH, cv2.IMREAD_GRAYSCALE)
     if DETECTOR != "vlm-only" and template is None:
@@ -142,11 +143,6 @@ def main():
     log_path = f"{log_name}-{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}.log"
     log_file = open(log_path, "w")
     print(f"Logging corrections to {log_path}")
-
-    def get_frame():
-        resp = requests.get(CAM_URL, timeout=2)
-        resp.raise_for_status()
-        return cv2.imdecode(np.frombuffer(resp.content, np.uint8), cv2.IMREAD_COLOR)
 
     def log(dx, dy):
         log_file.write(f"{datetime.now().isoformat()},{dx:.6f},{dy:.6f}\n")
@@ -166,7 +162,7 @@ def main():
         def error_at(pose):
             rtde_c.moveL(pose, speed=0.1, acceleration=ACCEL)
             time.sleep(SETTLE_S)
-            error = detect(get_frame())
+            error = detect(camera.get_frame())
             if error is None:
                 raise RuntimeError("Calibration: target not visible")
             return np.array(error[:2])
@@ -189,7 +185,7 @@ def main():
         # First detection happens at the calibrated depth, so its scale is the reference for J.
         ref_scale = None
         while True:
-            frame = get_frame()
+            frame = camera.get_frame()
             error = detect_tool(frame, template)
 
             if error is not None:
@@ -211,7 +207,7 @@ def main():
 
     def run_vlm_jut_phase(client, J_inv):
         for _ in range(MAX_JUT_ITERS):
-            frame = get_frame()
+            frame = camera.get_frame()
             result = detect_vlm(frame, client, TARGET_DESC)
 
             if result is None:

@@ -11,6 +11,7 @@ def main():
     other_scripts = sorted(
         f for f in os.listdir(script_dir)
         if f.endswith(".py") and f != os.path.basename(__file__)
+        and not f.startswith("capture")
     )
 
     for i, f in enumerate(other_scripts):

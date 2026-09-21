@@ -3,15 +3,12 @@
 import os
 
 import cv2
-import numpy as np
-import requests
 
-UR_IP = os.environ.get("UR_IP", "192.168.1.20")
+from capture import Camera
+
 TEMPLATE_PATH = os.environ.get("TEMPLATE_PATH", "tool.png")
 
-resp = requests.get(f"http://{UR_IP}:4242/current.jpg?type=color", timeout=2)
-resp.raise_for_status()
-frame = cv2.imdecode(np.frombuffer(resp.content, np.uint8), cv2.IMREAD_COLOR)
+frame = Camera().get_frame()
 cv2.imwrite("frame.png", frame)
 
 x, y, w, h = cv2.selectROI("Drag a tight box around the tool, then Enter", frame)

@@ -20,10 +20,10 @@ from datetime import datetime
 
 import cv2
 import numpy as np
-import requests
 import rtde_control
 import rtde_receive
 
+from capture import Camera
 from visual_servo import ACCEL, OPENAI_MODEL, SETTLE_S, clip_norm, draw_direction_hud
 
 TARGET_DESC = os.environ.get("TARGET_DESC", "a flat metal circle with 9 drill holes")
@@ -165,7 +165,7 @@ def main():
     print("Press 'q' in the video window to stop (halts a move mid-way; during a VLM call, takes effect after it).")
 
     UR_IP = os.environ.get("UR_IP", "192.168.1.20")
-    CAM_URL = f"http://{UR_IP}:4242/current.jpg?type=color"
+    camera = Camera(UR_IP)
 
     from openai import OpenAI
 
@@ -179,11 +179,6 @@ def main():
     log_file = open(log_path, "w")
     print(f"Logging moves to {log_path}, VLM context to {context_path}")
 
-    def get_frame():
-        resp = requests.get(CAM_URL, timeout=2)
-        resp.raise_for_status()
-        return cv2.imdecode(np.frombuffer(resp.content, np.uint8), cv2.IMREAD_COLOR)
-
     def show(frame, quit_key="q"):
         cv2.imshow("wrist camera", frame)
         return cv2.waitKey(1) & 0xFF == ord(quit_key)
@@ -194,7 +189,7 @@ def main():
     offset, tilt = np.zeros(3), np.zeros(2)
     notes, rows, turn, prev_frame, error = NOTES_TEMPLATE, [], 0, None, None
 
-    h, w = get_frame().shape[:2]
+    h, w = camera.get_frame().shape[:2]
     header = f"""# Autonomous visual servo context, started {stamp}
 
 ## Setup (facts, written by the robot)
@@ -228,7 +223,7 @@ y px counts down from the top edge.
     try:
         while True:
             turn += 1
-            frame = get_frame()
+            frame = camera.get_frame()
             try:
                 cmd = ask_vlm(client, write_context(), prev_frame, frame)
                 requested = [float(cmd.get(k, 0.0)) for k in ("dx", "dy", "dz", "drx", "dry")]
@@ -269,7 +264,7 @@ y px counts down from the top edge.
             # Async so 'q' is polled mid-move; done once the TCP is within 1 mm and 0.5 deg of target.
             while (err := remaining(pose := rtde_r.getActualTCPPose()))[0] > 1e-3 or err[1] > np.radians(0.5):
                 actual = np.array(pose[:3])
-                live = get_frame()
+                live = camera.get_frame()
                 draw_direction_hud(live, d[0], d[1], MAX_STEP)
                 if show(live):
                     rtde_c.stopL()
