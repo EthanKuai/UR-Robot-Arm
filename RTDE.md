@@ -3,8 +3,8 @@
 ## Setup
 
 - Connect via ethernet, get IP of UR Arm
-- Disable other protocols (Modbus, ethernet)
-- Enable External Control
+- Disable other protocols (Program > Install > Modbus/ethernet > Disable)
+- Enable External Control (Program > Install > External Control)
 
 # Python
 

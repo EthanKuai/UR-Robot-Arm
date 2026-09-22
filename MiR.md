@@ -27,7 +27,7 @@
 
 # UR Arm
 
-**Model: UR 10**
+**Model: UR 10, PolyScope 3.13.1 (a CB3 controller)**
 
 - Turn on everything within.
 - Turn on teach pendant.
@@ -43,3 +43,10 @@ DNS2: 192.168.0.1
 
 ## Robotiq Camera
 > https://robotiq.com/support
+
+- Download Robotic wrist camera drivers
+- Extract to FAT32 drive root
+- Install onto UR Teach Pendant via Setup > URCaps > `+`
+- Reboot
+- Install vision server (same steps)
+- Reboot
