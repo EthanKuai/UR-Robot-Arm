@@ -100,10 +100,11 @@ def detect_vlm(frame, client, target_desc):
     return (0.5 - x) * 2, (0.5 - y) * 2, conf
 
 
-def draw_direction_hud(frame, dx, dy, max_val):
+def draw_direction_hud(frame, dx, dy, max_val, slot=0):
     # Screen-space plot of the last correction signal; not aligned to real-world directions.
+    # slot=1 draws a second dial to the left of the first.
     radius, margin = 40, 15
-    center = (frame.shape[1] - margin - radius, margin + radius)
+    center = (frame.shape[1] - margin - radius - slot * (2 * radius + margin), margin + radius)
     cv2.circle(frame, center, radius, (200, 200, 200), 1)
     tip = (
         int(center[0] + (dx / max_val) * radius),
