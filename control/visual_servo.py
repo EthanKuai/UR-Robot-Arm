@@ -30,7 +30,7 @@ from capture import Camera
 DETECTOR = os.environ.get("DETECTOR", "template")  # template | vlm-only | vlm-assisted
 TARGET_DESC = os.environ.get("TARGET_DESC", "the flat metal disc tool with 9 drill holes")
 TEMPLATE_PATH = os.environ.get("TEMPLATE_PATH", "tool.png")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-terra")  # verify against current OpenAI vision models
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-6-astra")  # verify against current OpenAI vision models
 
 MAX_SPEED = 0.05       # m/s cap for continuous servo
 SERVO_GAIN = 1.0        # 1/s, proportional gain on the estimated tool-frame offset
